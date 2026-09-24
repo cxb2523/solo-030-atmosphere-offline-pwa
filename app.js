@@ -4,6 +4,17 @@
 
 // ─── 1. CONSTANTS & CONFIG ────────────────────────────────────────────────────
 
+import {
+  readCacheEntry,
+  writeCacheEntry,
+  clearWeatherCache,
+  normalizeDataSourceMode,
+  shouldUseDemoData,
+  describeCacheAge,
+  dataSourceBadgeText,
+} from './offline.js';
+import { buildDemoWeather } from './demo-data.js';
+
 // Use environment variable for API Key (provided by Vite)
 const API_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;
 
@@ -217,6 +228,7 @@ const STATE = {
     theme: 'dark',
     defaultCity: null,
     refreshInterval: 0,
+    dataSource: 'auto',
   },
   history: {},
   cache: {},
@@ -224,6 +236,7 @@ const STATE = {
   error: null,
   alerts: [],
   lastUpdated: null,
+  dataSource: null,
   dismissedAlerts: new Set(),
   favoriteCities: [],
   refreshTimer: null,
@@ -243,6 +256,7 @@ function loadSettings() {
   if (!['hpa', 'inhg', 'mmhg'].includes(STATE.settings.pressureUnit)) STATE.settings.pressureUnit = 'hpa';
   if (!['12', '24'].includes(String(STATE.settings.timeFormat))) STATE.settings.timeFormat = '12';
   if (!['dark', 'light', 'system'].includes(STATE.settings.theme)) STATE.settings.theme = 'dark';
+  STATE.settings.dataSource = normalizeDataSourceMode(STATE.settings.dataSource);
 }
 
 function saveSettings() {
@@ -250,19 +264,11 @@ function saveSettings() {
 }
 
 function loadCache(city) {
-  try {
-    const key = `wv_cache_${city.toLowerCase().replace(/\s+/g, '_')}`;
-    const raw = localStorage.getItem(key);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return null;
+  return readCacheEntry(localStorage, city);
 }
 
 function saveCache(city, data) {
-  try {
-    const key = `wv_cache_${city.toLowerCase().replace(/\s+/g, '_')}`;
-    localStorage.setItem(key, JSON.stringify({ timestamp: Date.now(), ...data }));
-  } catch {}
+  writeCacheEntry(localStorage, city, data);
 }
 
 function loadHistory(city) {
@@ -967,12 +973,12 @@ function renderHeroCard() {
   const bg = document.getElementById('weather-bg');
   bg.className = 'weather-bg ' + getWeatherBgClass(c.weather[0].main, c.weather[0].icon);
 
-  // Data age
-  const cacheAge = STATE.lastUpdated ? Math.floor((Date.now() - STATE.lastUpdated) / 60000) : 0;
+  // Data age + live/cached/demo source badge
+  const age = describeCacheAge(STATE.lastUpdated);
   const dataAgeEl = document.getElementById('data-age');
-  dataAgeEl.textContent = `Data from ${cacheAge < 1 ? 'just now' : cacheAge + ' min ago'}`;
-  if (cacheAge > 180) dataAgeEl.classList.add('stale');
-  else dataAgeEl.classList.remove('stale');
+  dataAgeEl.textContent = `Data from ${age.label}`;
+  dataAgeEl.classList.toggle('stale', age.stale);
+  renderDataSourceBadge();
 
   // Sunrise/Sunset side card
   const rise = formatTime(c.sys.sunrise, tz);
@@ -1389,6 +1395,10 @@ function initSettingsListeners() {
 
       if (setting === 'theme') applyTheme(value);
       if (setting === 'refreshInterval') setupAutoRefresh();
+      if (setting === 'dataSource') {
+        announce(`Data source set to ${value}.`);
+        if (STATE.city) searchCity(STATE.city);
+      }
       if (setting === 'unit') {
         document.querySelectorAll('.unit-option').forEach(o => o.classList.toggle('active', o.dataset.unit === value));
       }
@@ -1408,6 +1418,24 @@ function initSettingsListeners() {
     showTooltip('History cleared');
     renderHistory();
   });
+
+  document.getElementById('clear-cache-btn')?.addEventListener('click', clearCachedWeather);
+}
+
+// Manual cache reset: clears per-city localStorage weather caches and the
+// service worker's runtime data cache (the app shell stays cached).
+async function clearCachedWeather() {
+  const removed = clearWeatherCache(localStorage);
+  let swCleared = false;
+  if ('caches' in window) {
+    try {
+      const keys = await caches.keys();
+      const dataKeys = keys.filter(key => key.startsWith('atmosphere-data'));
+      await Promise.all(dataKeys.map(key => caches.delete(key)));
+      swCleared = dataKeys.length > 0;
+    } catch {}
+  }
+  announce(`Cleared ${removed} cached weather ${removed === 1 ? 'entry' : 'entries'}${swCleared ? ' and the offline request cache' : ''}.`);
 }
 
 // ─── 10. SEARCH & AUTOCOMPLETE ────────────────────────────────────────────────
@@ -1541,10 +1569,21 @@ async function searchCity(city) {
   document.getElementById('error-state').style.display = 'none';
   document.getElementById('loading-skeleton').style.display = 'block';
 
+  const dataSourceMode = normalizeDataSourceMode(STATE.settings.dataSource);
+  const hasApiKey = Boolean(API_KEY) && API_KEY !== 'your_api_key_here';
+
+  // Demo data source: explicit demo mode, or auto mode without a usable API key.
+  if (shouldUseDemoData(dataSourceMode, !hasApiKey)) {
+    applyDemoData(city);
+    return;
+  }
+
   // Check API key
-  if (!API_KEY || API_KEY === 'your_api_key_here') {
+  if (!hasApiKey) {
     document.getElementById('api-key-banner').style.display = 'block';
     document.getElementById('loading-skeleton').style.display = 'none';
+    STATE.loading = false;
+    if (refreshButton) refreshButton.disabled = false;
     return;
   }
 
@@ -1556,8 +1595,16 @@ async function searchCity(city) {
       applyDataToState(cached);
       showOfflineBanner(city);
       showWeatherContent();
+      STATE.loading = false;
+      if (refreshButton) refreshButton.disabled = false;
       return;
     }
+    if (shouldUseDemoData(dataSourceMode, true)) {
+      applyDemoData(city);
+      return;
+    }
+    STATE.loading = false;
+    if (refreshButton) refreshButton.disabled = false;
     showError('offline');
     return;
   }
@@ -1581,6 +1628,8 @@ async function searchCity(city) {
     STATE.lat = lat;
     STATE.lon = lon;
     STATE.lastUpdated = Date.now();
+    STATE.dataSource = 'live';
+    document.getElementById('offline-banner').style.display = 'none';
 
     // Save cache
     saveCache(city, { currentWeather: current, forecast, airQuality, uv });
@@ -1615,6 +1664,8 @@ async function searchCity(city) {
         applyDataToState(cached);
         showOfflineBanner(city);
         showWeatherContent();
+      } else if (shouldUseDemoData(dataSourceMode, true)) {
+        applyDemoData(city);
       } else {
         showError('network');
       }
@@ -1624,6 +1675,14 @@ async function searchCity(city) {
     const refreshButton = document.getElementById('refresh-btn');
     if (refreshButton) refreshButton.disabled = false;
   }
+}
+
+function renderDataSourceBadge() {
+  const badge = document.getElementById('data-source-badge');
+  if (!badge) return;
+  const source = STATE.dataSource || 'live';
+  badge.textContent = dataSourceBadgeText(source, STATE.lastUpdated);
+  badge.dataset.source = source;
 }
 
 function applyDataToState(cached) {
@@ -1636,6 +1695,26 @@ function applyDataToState(cached) {
     STATE.lon = STATE.current.coord.lon;
   }
   STATE.lastUpdated = cached.timestamp;
+  STATE.dataSource = 'cache';
+}
+
+function applyDemoData(city) {
+  const demo = buildDemoWeather(city);
+  STATE.current = demo.currentWeather;
+  STATE.forecast = demo.forecast;
+  STATE.airQuality = demo.airQuality;
+  STATE.uv = demo.uv;
+  STATE.lat = demo.currentWeather.coord.lat;
+  STATE.lon = demo.currentWeather.coord.lon;
+  STATE.lastUpdated = demo.timestamp;
+  STATE.dataSource = 'demo';
+  STATE.loading = false;
+  const refreshButton = document.getElementById('refresh-btn');
+  if (refreshButton) refreshButton.disabled = false;
+  document.getElementById('loading-skeleton').style.display = 'none';
+  document.getElementById('offline-banner').style.display = 'none';
+  showWeatherContent();
+  announce(`Demo data source active for ${city}.`);
 }
 
 function showWeatherContent() {
@@ -2283,6 +2362,11 @@ function initFreeFeatures() {
     input.value = 'London';
     input.focus();
     announce('London entered. Press Enter to search.');
+  });
+  document.getElementById('welcome-demo-data-btn')?.addEventListener('click', () => {
+    STATE.settings.dataSource = 'demo';
+    saveSettings();
+    searchCity(STATE.city || 'London');
   });
   document.getElementById('welcome-location-btn')?.addEventListener('click', () => {
     document.getElementById('location-btn')?.click();

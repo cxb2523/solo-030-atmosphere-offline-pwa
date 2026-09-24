@@ -43,7 +43,7 @@
     <div id="api-key-banner" class="api-key-banner" style="display: none;">
         <div class="banner-content">
             <span class="banner-icon">⚠️</span>
-            <span class="banner-text">Add your OpenWeatherMap API key in app.js to get started</span>
+            <span class="banner-text">Add your OpenWeatherMap API key for live data — demo data is shown until then</span>
         </div>
     </div>
 
@@ -114,6 +114,7 @@
                 <div class="welcome-actions">
                     <button id="welcome-location-btn" class="location-btn" type="button"><span>📍</span><span>Use My Location</span></button>
                     <button id="welcome-demo-btn" class="secondary-btn" type="button">Try a city</button>
+                    <button id="welcome-demo-data-btn" class="secondary-btn" type="button">Use demo data (works offline)</button>
                 </div>
                 <p class="welcome-note">Your preferences and saved places stay on this device. No account required.</p>
             </section>
@@ -200,7 +201,10 @@
                                     <span>Share</span>
                                 </button>
                             </div>
-                            <div id="data-age" class="data-age" role="status">Data from -- ago</div>
+                            <div class="data-meta">
+                                <span id="data-source-badge" class="data-source-badge" data-source="live" role="status">Live data</span>
+                                <span id="data-age" class="data-age" role="status">Data from -- ago</span>
+                            </div>
                         </div>
                     </div>
 
@@ -477,7 +481,18 @@
             </div>
 
             <div class="settings-group">
+                <label class="settings-label">Data Source</label>
+                <p class="settings-help">Auto uses live data when available and falls back to cached or demo data offline.</p>
+                <div class="settings-options">
+                    <button class="settings-option active" data-setting="dataSource" data-value="auto">Auto</button>
+                    <button class="settings-option" data-setting="dataSource" data-value="live">Live only</button>
+                    <button class="settings-option" data-setting="dataSource" data-value="demo">Demo data</button>
+                </div>
+            </div>
+
+            <div class="settings-group">
                 <button id="clear-history-btn" class="clear-history-btn">Clear All History</button>
+                <button id="clear-cache-btn" class="clear-history-btn" type="button">Clear Cached Weather</button>
                 <button id="export-data-btn" class="secondary-btn settings-data-btn" type="button">Export Settings & Places</button>
                 <label class="secondary-btn settings-data-btn" for="import-data-input">Import Settings & Places</label>
                 <input id="import-data-input" type="file" accept="application/json,.json" hidden>

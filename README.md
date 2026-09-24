@@ -47,6 +47,7 @@ The interface is designed to keep a large amount of weather information readable
 - Switch temperature, wind, pressure, time, and theme preferences.
 - Save favorite cities, export/import local data, reset local data, and share city links.
 - Install the application and use the cached app shell offline in browsers that support Progressive Web App (PWA) features.
+- Keep working offline: cached weather responses are served when the network drops, a badge marks the data as live, cached, or demo (with its age), and a built-in demo data source keeps every canvas panel rendering without any network or API key.
 
 ### Screenshots and live preview
 
@@ -94,7 +95,7 @@ The production browser bundle has no application runtime dependency beyond stand
 
 Install a current Node.js release with npm. A modern browser is required for the full experience. Canvas 2D, Fetch, and ES modules are required; geolocation, clipboard, Web Share, service workers, and installation are progressive enhancements.
 
-You also need an OpenWeatherMap account and API key for live weather requests. The repository reads the key from `VITE_OPENWEATHER_API_KEY`.
+You also need an OpenWeatherMap account and API key for live weather requests. The repository reads the key from `VITE_OPENWEATHER_API_KEY`. The key is optional for trying the interface: without one, Atmosphere automatically serves generated demo data and marks it as such on the page.
 
 ### Installation
 
@@ -138,7 +139,7 @@ npm run preview
 
 | Variable | Required | Description |
 |---|---:|---|
-| `VITE_OPENWEATHER_API_KEY` | Yes for live data | OpenWeatherMap API key exposed to the client-side Vite bundle |
+| `VITE_OPENWEATHER_API_KEY` | No (yes for live data) | OpenWeatherMap API key exposed to the client-side Vite bundle. Leave unset to run on the demo data source. |
 
 Do not commit `.env` files or API keys. The existing `.gitignore` excludes `.env`, `.env.local`, and other local environment variants.
 
@@ -173,6 +174,26 @@ The Settings panel provides the following local-first controls:
 - **Copy City Link:** Create a URL containing the selected city in the hash fragment.
 - **Share:** Use the browser’s native share sheet when supported.
 
+### Offline mode and demo data
+
+Atmosphere is usable without a network connection:
+
+- **App shell:** `public/sw.js` precaches the app shell and caches same-origin assets at runtime, so the installed or previously visited page loads offline.
+- **Request caching:** OpenWeatherMap API responses are cached by the service worker (network-first). When a request fails, the last cached response is served instead.
+- **Local fallback:** Each searched city is also stored in `localStorage`. If a fetch fails or the browser is offline, the dashboard falls back to that cached snapshot.
+- **Source badge:** The hero card always shows whether the current data is **Live**, **Cached**, or **Demo**, including how old the data is. Stale data is flagged.
+- **Manual controls:** The navbar **↻** button refreshes the current city, and **Settings → Clear Cached Weather** removes all cached weather entries (local storage plus the service worker’s data cache) without touching the app shell.
+- **Demo data source:** When live data is unavailable (no API key, offline, or request failure) and no cache exists, Atmosphere can serve a generated demo dataset so every canvas panel still renders. Switch it under **Settings → Data Source** (`Auto`, `Live only`, `Demo data`) or press **Use demo data** on the welcome screen. Demo data is deterministic per city and hour.
+
+#### Verifying offline mode locally
+
+1. Run `npm run dev` (or `npm run build && npm run preview`) and open the page once while online so the service worker registers.
+2. Search a city so its weather is cached locally.
+3. In the browser dev tools, set the network to **Offline** (Application → Service Workers → “Offline”, or the Network throttling menu).
+4. Reload the page: the app shell loads, the previous city renders from cache, and the badge reads **Cached data · from …**.
+5. Search a city with no cache (or press **Clear Cached Weather** first): the dashboard falls back to the demo data source and the badge reads **Demo data**. All canvas panels (hourly chart, gauges, compass, sun arc) still render.
+6. Go back online and press **↻**: the badge returns to **Live data · updated just now**.
+
 ---
 
 ## <a name="weather-data-integration"></a>Weather-data integration
@@ -200,6 +221,8 @@ This repository does not expose a server-side proxy, so the key is delivered to 
 ```text
 Atmosphere/
 ├── app.js                         # API calls, state, rendering, charts, storage, and event handlers
+├── offline.js                     # Cache freshness, data-source mode, and badge logic (pure, unit-tested)
+├── demo-data.js                   # Deterministic OpenWeatherMap-shaped demo data generator
 ├── index.html                     # Dashboard markup, dialogs, settings, and PWA links
 ├── style.css                      # Themes, layout, responsive rules, animations, and print styles
 ├── package.json                   # Vite scripts and development dependency
@@ -217,9 +240,10 @@ Atmosphere/
 │   ├── og-image.png               # Social preview image
 │   ├── robots.txt                 # Crawler directives
 │   ├── sitemap.xml                # Sitemap for the hosted homepage
-│   └── sw.js                      # App-shell service worker
+│   └── sw.js                      # App-shell + weather-request caching service worker
 ├── tests/
-│   └── feature-smoke.test.mjs     # Dependency-free repository smoke tests
+│   ├── feature-smoke.test.mjs     # Dependency-free repository smoke tests
+│   └── offline.test.mjs           # Cache, fallback, demo-source, and refresh-button tests
 ├── CODE_OF_CONDUCT.md             # Contributor Covenant-based conduct policy
 ├── CONTRIBUTING.md                # Setup and pull-request guidance
 ├── SECURITY.md                    # Vulnerability-reporting policy
@@ -235,7 +259,8 @@ Atmosphere/
 - [x] Current weather, five-day forecast, hourly forecast, air quality, UV index, sun, moon, history, alerts, and clothing guidance.
 - [x] City search, debounced suggestions, recent searches, and browser geolocation.
 - [x] Dark, light, and system theme preferences with unit and time-format settings.
-- [x] Local cache fallback and offline status messaging.
+- [x] Local cache fallback, offline status messaging, and a live/cached/demo source badge.
+- [x] Switchable demo data source and manual cache clearing for fully offline use.
 - [x] Favorites, local JSON backup/restore, reset controls, share links, and native sharing.
 - [x] Installable PWA metadata and a cached app shell.
 - [x] Canvas-based visualizations with responsive resizing.
@@ -246,7 +271,7 @@ Atmosphere/
 - Live weather requests require a user-provided OpenWeatherMap API key.
 - Weather API quotas, endpoint availability, and data freshness are controlled by OpenWeatherMap.
 - Data is stored per browser and is not synchronized between devices.
-- The service worker caches the app shell; live weather data still requires a network connection unless a matching local cache exists.
+- The service worker caches the app shell and previously fetched weather responses; cities never fetched before fall back to the demo data source when offline.
 - Native sharing, clipboard operations, geolocation, installation, and service workers depend on browser support and secure-context rules.
 
 ### Roadmap
@@ -265,7 +290,7 @@ Run the repository’s dependency-free smoke tests:
 npm test
 ```
 
-The tests verify that the primary new controls are present, PWA metadata and service-worker hooks are linked, and the core local-first feature functions remain wired into `app.js`.
+The tests verify that the primary new controls are present, PWA metadata and service-worker hooks are linked, and the core local-first feature functions remain wired into `app.js`. `tests/offline.test.mjs` additionally covers cache hits, stale-cache fallback, demo data source switching, demo payload shape, and refresh-button semantics.
 
 Run the production build check:
 
