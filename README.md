@@ -17,6 +17,7 @@
 - [Tech stack](#tech-stack)
 - [Getting started](#getting-started)
 - [Usage](#usage)
+- [Offline mode and demo data](#offline-mode-and-demo-data)
 - [Weather-data integration](#weather-data-integration)
 - [Project structure](#project-structure)
 - [Features and roadmap](#features-and-roadmap)
@@ -175,6 +176,27 @@ The Settings panel provides the following local-first controls:
 
 ---
 
+## <a name="offline-mode-and-demo-data"></a>Offline mode and demo data
+
+Atmosphere keeps working without a network connection:
+
+- **App shell:** The service worker (`public/sw.js`) precaches the page, scripts, and styles, and answers navigations from the cache when the network is down.
+- **Weather responses:** Successful OpenWeatherMap responses are stored both in the service-worker runtime cache and in a per-city `localStorage` cache (`wv_cache_*`). Entries are considered fresh for 30 minutes; older entries are still used as a fallback but are flagged as stale.
+- **Data-source badge:** The hero card shows a pill marking the current data as **Live data**, **Cached data**, or **Demo data**. Cached views also show how old the cache is (for example “Cached 12 min ago”), and the banner above the page explains why cached data is being shown.
+- **Manual controls:** The navbar ↻ button refetches the current city (and is disabled while a load is in flight). **Settings → Clear Cached Weather** removes all cached weather entries and asks the service worker to drop its runtime caches.
+- **Demo data source:** **Settings → Data Source → Demo data** switches the dashboard to a built-in generator that produces deterministic, OpenWeatherMap-shaped payloads locally — no API key or network required. When no API key is configured and no cache exists, the error screen offers a one-click **Enable demo data** action.
+
+### Verifying offline mode locally
+
+1. Start the dev server with `npm run dev` (or `npm run build && npm run preview`) and open the page in a browser.
+2. Search for a city once while online so the cache is populated. The badge reads **Live data**.
+3. Open the browser DevTools, go to **Network**, and enable **Offline** (or disconnect the machine from the network).
+4. Press the ↻ refresh button or reload the page. The dashboard still renders — all canvas panels included — the badge switches to **Cached data**, and the banner shows the cache age.
+5. Open **Settings → Data Source → Demo data** and search any city: the badge shows **Demo data** and every panel renders without any network requests.
+6. Use **Settings → Clear Cached Weather**, reload while offline, and confirm the app shell still loads and reports that no cached data is available.
+
+---
+
 ## <a name="weather-data-integration"></a>Weather-data integration
 
 Atmosphere calls the following OpenWeatherMap endpoints directly from `app.js`:
@@ -200,6 +222,9 @@ This repository does not expose a server-side proxy, so the key is delivered to 
 ```text
 Atmosphere/
 ├── app.js                         # API calls, state, rendering, charts, storage, and event handlers
+├── cache.js                       # Per-city weather cache helpers (TTL, freshness, clearing)
+├── data-source.js                 # Live/cache/demo source selection and badge copy
+├── demo-data.js                   # Built-in deterministic demo weather generator
 ├── index.html                     # Dashboard markup, dialogs, settings, and PWA links
 ├── style.css                      # Themes, layout, responsive rules, animations, and print styles
 ├── package.json                   # Vite scripts and development dependency
@@ -217,9 +242,9 @@ Atmosphere/
 │   ├── og-image.png               # Social preview image
 │   ├── robots.txt                 # Crawler directives
 │   ├── sitemap.xml                # Sitemap for the hosted homepage
-│   └── sw.js                      # App-shell service worker
+│   └── sw.js                      # App-shell + runtime-cache service worker
 ├── tests/
-│   └── feature-smoke.test.mjs     # Dependency-free repository smoke tests
+│   └── feature-smoke.test.mjs     # Dependency-free smoke and cache/data-source unit tests
 ├── CODE_OF_CONDUCT.md             # Contributor Covenant-based conduct policy
 ├── CONTRIBUTING.md                # Setup and pull-request guidance
 ├── SECURITY.md                    # Vulnerability-reporting policy
@@ -246,7 +271,7 @@ Atmosphere/
 - Live weather requests require a user-provided OpenWeatherMap API key.
 - Weather API quotas, endpoint availability, and data freshness are controlled by OpenWeatherMap.
 - Data is stored per browser and is not synchronized between devices.
-- The service worker caches the app shell; live weather data still requires a network connection unless a matching local cache exists.
+- The service worker caches the app shell and recent API responses; live weather data requires a network connection unless a matching local cache exists or the demo data source is enabled.
 - Native sharing, clipboard operations, geolocation, installation, and service workers depend on browser support and secure-context rules.
 
 ### Roadmap

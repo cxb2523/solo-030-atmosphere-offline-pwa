@@ -4,6 +4,10 @@
 
 // ─── 1. CONSTANTS & CONFIG ────────────────────────────────────────────────────
 
+import { readCache, writeCache, clearWeatherCaches, formatCacheAge } from './cache.js';
+import { buildDemoWeather } from './demo-data.js';
+import { resolveFetchPlan, resolveFetchFailure, describeDataSource } from './data-source.js';
+
 // Use environment variable for API Key (provided by Vite)
 const API_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;
 
@@ -217,6 +221,7 @@ const STATE = {
     theme: 'dark',
     defaultCity: null,
     refreshInterval: 0,
+    dataSource: 'live',
   },
   history: {},
   cache: {},
@@ -228,6 +233,8 @@ const STATE = {
   favoriteCities: [],
   refreshTimer: null,
   clockTimer: null,
+  dataSource: null,
+  cacheStale: false,
 };
 
 function loadSettings() {
@@ -243,6 +250,7 @@ function loadSettings() {
   if (!['hpa', 'inhg', 'mmhg'].includes(STATE.settings.pressureUnit)) STATE.settings.pressureUnit = 'hpa';
   if (!['12', '24'].includes(String(STATE.settings.timeFormat))) STATE.settings.timeFormat = '12';
   if (!['dark', 'light', 'system'].includes(STATE.settings.theme)) STATE.settings.theme = 'dark';
+  if (!['live', 'demo'].includes(STATE.settings.dataSource)) STATE.settings.dataSource = 'live';
 }
 
 function saveSettings() {
@@ -250,19 +258,12 @@ function saveSettings() {
 }
 
 function loadCache(city) {
-  try {
-    const key = `wv_cache_${city.toLowerCase().replace(/\s+/g, '_')}`;
-    const raw = localStorage.getItem(key);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return null;
+  const hit = readCache(localStorage, city);
+  return hit ? hit.entry : null;
 }
 
 function saveCache(city, data) {
-  try {
-    const key = `wv_cache_${city.toLowerCase().replace(/\s+/g, '_')}`;
-    localStorage.setItem(key, JSON.stringify({ timestamp: Date.now(), ...data }));
-  } catch {}
+  writeCache(localStorage, city, data);
 }
 
 function loadHistory(city) {
@@ -1326,6 +1327,7 @@ function renderAll() {
   renderFunStats();
   renderFavorites();
   updateFavoriteButton();
+  renderDataStatus();
 }
 
 // ─── 9. SETTINGS PANEL ────────────────────────────────────────────────────────
@@ -1389,6 +1391,7 @@ function initSettingsListeners() {
 
       if (setting === 'theme') applyTheme(value);
       if (setting === 'refreshInterval') setupAutoRefresh();
+      if (setting === 'dataSource' && STATE.city) searchCity(STATE.city);
       if (setting === 'unit') {
         document.querySelectorAll('.unit-option').forEach(o => o.classList.toggle('active', o.dataset.unit === value));
       }
@@ -1541,28 +1544,34 @@ async function searchCity(city) {
   document.getElementById('error-state').style.display = 'none';
   document.getElementById('loading-skeleton').style.display = 'block';
 
-  // Check API key
-  if (!API_KEY || API_KEY === 'your_api_key_here') {
-    document.getElementById('api-key-banner').style.display = 'block';
-    document.getElementById('loading-skeleton').style.display = 'none';
-    return;
-  }
+  const hasApiKey = Boolean(API_KEY) && API_KEY !== 'your_api_key_here';
+  document.getElementById('api-key-banner').style.display = hasApiKey ? 'none' : 'block';
 
-  // Check offline
-  const isOffline = !navigator.onLine;
-  if (isOffline) {
-    const cached = loadCache(city);
-    if (cached) {
-      applyDataToState(cached);
-      showOfflineBanner(city);
+  try {
+    const plan = resolveFetchPlan({
+      demoMode: STATE.settings.dataSource === 'demo',
+      online: navigator.onLine,
+      hasApiKey,
+      cache: readCache(localStorage, city),
+    });
+
+    if (plan.plan === 'demo') {
+      loadDemoCity(city);
+      return;
+    }
+
+    if (plan.plan === 'cache') {
+      applyCacheToState(city);
+      showCachedBanner(city, plan.reason);
       showWeatherContent();
       return;
     }
-    showError('offline');
-    return;
-  }
 
-  try {
+    if (plan.plan === 'error') {
+      showError(plan.reason === 'offline_no_cache' ? 'offline' : 'no_api_key');
+      return;
+    }
+
     const [current, forecast] = await Promise.all([
       fetchCurrentWeather(city),
       fetchForecast(city),
@@ -1581,6 +1590,9 @@ async function searchCity(city) {
     STATE.lat = lat;
     STATE.lon = lon;
     STATE.lastUpdated = Date.now();
+    STATE.dataSource = 'live';
+    STATE.cacheStale = false;
+    document.getElementById('offline-banner').style.display = 'none';
 
     // Save cache
     saveCache(city, { currentWeather: current, forecast, airQuality, uv });
@@ -1609,11 +1621,12 @@ async function searchCity(city) {
     else if (msg === 'api_key_invalid') showError('api_key_invalid');
     else if (msg === 'rate_limit') showError('rate_limit');
     else {
-      // Try cache fallback
-      const cached = loadCache(city);
-      if (cached) {
-        applyDataToState(cached);
-        showOfflineBanner(city);
+      // Live request failed — fall back to any cached entry, even expired.
+      const failure = resolveFetchFailure(readCache(localStorage, city));
+      if (failure.plan === 'cache') {
+        applyCacheToState(city);
+        STATE.cacheStale = failure.stale;
+        showCachedBanner(city, 'fetch_failed');
         showWeatherContent();
       } else {
         showError('network');
@@ -1624,6 +1637,32 @@ async function searchCity(city) {
     const refreshButton = document.getElementById('refresh-btn');
     if (refreshButton) refreshButton.disabled = false;
   }
+}
+
+function applyCacheToState(city) {
+  const hit = readCache(localStorage, city);
+  if (!hit) return false;
+  applyDataToState(hit.entry);
+  STATE.dataSource = 'cache';
+  STATE.cacheStale = !hit.fresh;
+  return true;
+}
+
+function loadDemoCity(city) {
+  const demo = buildDemoWeather(city);
+  STATE.current = demo.current;
+  STATE.forecast = demo.forecast;
+  STATE.airQuality = demo.airQuality;
+  STATE.uv = demo.uv;
+  STATE.lat = demo.current.coord.lat;
+  STATE.lon = demo.current.coord.lon;
+  STATE.lastUpdated = Date.now();
+  STATE.dataSource = 'demo';
+  STATE.cacheStale = false;
+  document.getElementById('offline-banner').style.display = 'none';
+  addRecentSearch(city);
+  renderRecentSearches();
+  showWeatherContent();
 }
 
 function applyDataToState(cached) {
@@ -1656,12 +1695,42 @@ function showWeatherContent() {
 }
 
 function showOfflineBanner(city) {
+  showCachedBanner(city, 'offline');
+}
+
+function showCachedBanner(city, reason) {
   const banner = document.getElementById('offline-banner');
   const text = document.getElementById('offline-text');
-  const cached = loadCache(city);
-  const mins = cached ? Math.floor((Date.now() - cached.timestamp) / 60000) : 0;
-  text.textContent = `You appear to be offline. Showing cached data from ${mins} min ago.`;
+  const hit = readCache(localStorage, city);
+  const age = hit ? formatCacheAge(hit.ageMs) : 'a while ago';
+  const staleNote = hit && !hit.fresh ? ' (older than 30 min)' : '';
+  const prefix = reason === 'offline'
+    ? 'You appear to be offline.'
+    : reason === 'no_api_key'
+      ? 'No API key configured.'
+      : 'Live weather request failed.';
+  text.textContent = `${prefix} Showing cached data from ${age}${staleNote}.`;
   banner.style.display = 'flex';
+}
+
+function renderDataStatus() {
+  const source = STATE.dataSource || 'live';
+  const ageMs = STATE.lastUpdated ? Date.now() - STATE.lastUpdated : null;
+  const { label, detail } = describeDataSource(source, ageMs, formatCacheAge);
+
+  const badge = document.getElementById('data-source-badge');
+  if (badge) {
+    badge.textContent = label;
+    badge.dataset.source = source;
+    badge.classList.toggle('stale', source === 'cache' && STATE.cacheStale);
+    badge.title = detail;
+  }
+
+  const dataAgeEl = document.getElementById('data-age');
+  if (dataAgeEl) {
+    dataAgeEl.textContent = detail;
+    dataAgeEl.classList.toggle('stale', source === 'cache' && STATE.cacheStale);
+  }
 }
 
 function showError(type) {
@@ -1673,6 +1742,7 @@ function showError(type) {
   const icons = {
     city_not_found: '🔍',
     api_key_invalid: '🔑',
+    no_api_key: '🔑',
     rate_limit: '⏳',
     network: '📡',
     offline: '📡',
@@ -1681,6 +1751,7 @@ function showError(type) {
   const titles = {
     city_not_found: 'City not found',
     api_key_invalid: 'Invalid API key',
+    no_api_key: 'No API key configured',
     rate_limit: 'Too many requests',
     network: 'Connection error',
     offline: 'You are offline',
@@ -1689,6 +1760,7 @@ function showError(type) {
   const messages = {
     city_not_found: 'We couldn\'t find that city. Check the spelling and try again.',
     api_key_invalid: 'Your OpenWeatherMap API key is invalid. Update it in app.js.',
+    no_api_key: 'Add an OpenWeatherMap API key for live data, or use the built-in demo data source to explore the dashboard offline.',
     rate_limit: 'API rate limit reached. Please wait a minute before trying again.',
     network: 'Unable to reach the weather server. Check your connection.',
     offline: 'No internet connection detected. No cached data available.',
@@ -1697,6 +1769,7 @@ function showError(type) {
   const actions = {
     city_not_found: 'Search again',
     api_key_invalid: 'Learn more',
+    no_api_key: 'Enable demo data',
     rate_limit: 'Refresh',
     network: 'Retry',
     offline: 'Retry',
@@ -1709,7 +1782,11 @@ function showError(type) {
   const actionBtn = document.getElementById('error-action');
   actionBtn.textContent = actions[type] || 'OK';
   actionBtn.onclick = () => {
-    if (type === 'rate_limit' || type === 'network' || type === 'offline') {
+    if (type === 'no_api_key') {
+      STATE.settings.dataSource = 'demo';
+      saveSettings();
+      searchCity(STATE.city || 'London');
+    } else if (type === 'rate_limit' || type === 'network' || type === 'offline') {
       if (STATE.city) searchCity(STATE.city);
     } else {
       errState.style.display = 'none';
@@ -2088,15 +2165,15 @@ async function init() {
   initOfflineDetection();
   initHistoryCompare();
   initRefreshButton();
+  initClearCacheButton();
   startClock();
 
   // Load default city (cache first, then fresh)
   const defaultCity = hasSharedCity ? null : (STATE.settings.defaultCity || getRecentSearches()[0]);
   if (defaultCity) {
-    const cached = loadCache(defaultCity);
-    if (cached) {
+    if (loadCache(defaultCity)) {
       STATE.city = defaultCity;
-      applyDataToState(cached);
+      applyCacheToState(defaultCity);
       showWeatherContent();
       // Then fetch fresh data silently
       searchCity(defaultCity);
@@ -2304,6 +2381,22 @@ function initRefreshButton() {
     }
     searchCity(STATE.city);
     announce('Refreshing weather data.');
+  });
+}
+
+function clearAllWeatherCaches() {
+  const removed = clearWeatherCaches(localStorage);
+  const worker = navigator.serviceWorker?.controller;
+  if (worker) worker.postMessage({ type: 'CLEAR_CACHES' });
+  return removed;
+}
+
+function initClearCacheButton() {
+  document.getElementById('clear-cache-btn')?.addEventListener('click', () => {
+    const removed = clearAllWeatherCaches();
+    announce(removed
+      ? `Cleared ${removed} cached weather ${removed === 1 ? 'entry' : 'entries'}.`
+      : 'No cached weather to clear.');
   });
 }
 

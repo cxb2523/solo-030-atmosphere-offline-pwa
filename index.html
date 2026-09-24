@@ -43,7 +43,7 @@
     <div id="api-key-banner" class="api-key-banner" style="display: none;">
         <div class="banner-content">
             <span class="banner-icon">⚠️</span>
-            <span class="banner-text">Add your OpenWeatherMap API key in app.js to get started</span>
+            <span class="banner-text">Add your OpenWeatherMap API key for live data, or enable the demo data source in Settings</span>
         </div>
     </div>
 
@@ -144,7 +144,10 @@
                                 <h1 id="hero-city" class="hero-city">--</h1>
                                 <span id="hero-country" class="hero-country">--</span>
                             </div>
-                            <div id="hero-updated" class="hero-updated">Updated -- ago</div>
+                            <div class="hero-status">
+                                <span id="data-source-badge" class="data-source-badge" data-source="live" role="status">Live data</span>
+                                <div id="hero-updated" class="hero-updated">Updated -- ago</div>
+                            </div>
                         </div>
                         
                         <div class="hero-main">
@@ -477,6 +480,16 @@
             </div>
 
             <div class="settings-group">
+                <label class="settings-label">Data Source</label>
+                <div class="settings-options">
+                    <button class="settings-option active" data-setting="dataSource" data-value="live">Live API</button>
+                    <button class="settings-option" data-setting="dataSource" data-value="demo">Demo data</button>
+                </div>
+                <p class="settings-help">Demo data generates realistic weather locally — no network or API key required.</p>
+            </div>
+
+            <div class="settings-group">
+                <button id="clear-cache-btn" class="secondary-btn settings-data-btn" type="button">Clear Cached Weather</button>
                 <button id="clear-history-btn" class="clear-history-btn">Clear All History</button>
                 <button id="export-data-btn" class="secondary-btn settings-data-btn" type="button">Export Settings & Places</button>
                 <label class="secondary-btn settings-data-btn" for="import-data-input">Import Settings & Places</label>
